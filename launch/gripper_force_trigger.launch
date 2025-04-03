@@ -1,0 +1,3 @@
+<launch>
+  <node pkg="gripper_force_trigger" type="gripper_force_trigger.py" name="gripper_force_trigger" output="screen"/>
+</launch>
