@@ -1,1 +1,1 @@
-git+https://github.com/endail/pi-hx711
+pip install git+https://github.com/timengelbracht/hx711py-raspberrypi5.git

@@ -2,62 +2,48 @@
 import rospy
 from std_msgs.msg import Float32
 from hx711 import HX711
-import signal
-import sys
+import time
 
-# Initialize ROS node
-rospy.init_node('pi_force_reader')
+# Parameters
+DATA_PIN = rospy.get_param("~data_pin", 31)         # Physical pin (e.g. 31 -> GPIO6)
+CLOCK_PIN = rospy.get_param("~clock_pin", 29)       # Physical pin (e.g. 29 -> GPIO5)
+SCALE_FACTOR = rospy.get_param("~scale_factor", 20938.0)  # Calibration factor
+FORCE_CUTOFF = rospy.get_param("~force_cutoff", 80.0)      # Maximum allowable force in Newtons
+FILTER_SIZE = rospy.get_param("~filter_size", 3)     # Size of moving average filter
+FREQ = rospy.get_param("~publish_frequency", 50.0)   # Publishing frequency (Hz)
 
-# Load ROS parameters
-DATA_PIN = rospy.get_param('~data_pin', 5)
-CLOCK_PIN = rospy.get_param('~clock_pin', 6)
-REFERENCE_UNIT = rospy.get_param('~reference_unit', 20938)
-FORCE_CUTOFF = rospy.get_param('~force_cutoff', 80.0)
-FILTER_SIZE = rospy.get_param('~filter_size', 3)
-PUBLISH_HZ = rospy.get_param('~publish_rate', 20)
+rospy.init_node("gripper_force_trigger", anonymous=True)
+pub = rospy.Publisher("gripper_force_trigger", Float32, queue_size=10)
+rate = rospy.Rate(FREQ)
 
-# ROS publisher
-pub = rospy.Publisher('/gripper_force_trigger', Float32, queue_size=10)
-rate = rospy.Rate(PUBLISH_HZ)
-
-# HX711 Init
-hx = HX711(dout_pin=DATA_PIN, pd_sck_pin=CLOCK_PIN)
-hx.set_reading_format("MSB", "MSB")
-hx.set_reference_unit(REFERENCE_UNIT)
-hx.reset()
+# Initialize HX711
+hx = HX711(dout=DATA_PIN, pd_sck=CLOCK_PIN, line_map_name='RPI_5')
+hx.set_reference_unit(SCALE_FACTOR)
 hx.tare()
-rospy.loginfo("HX711 ready and tared.")
 
-# Graceful exit
-def clean_and_exit(sig, frame):
-    rospy.loginfo("Shutting down HX711 node...")
-    hx.power_down()
-    sys.exit(0)
+# Filter buffer
+force_readings = [0.0] * FILTER_SIZE
+filter_index = 0
 
-signal.signal(signal.SIGINT, clean_and_exit)
+rospy.loginfo("Force trigger node ready.")
 
-# Initialize filter buffer
-force_buffer = [0.0] * FILTER_SIZE
-index = 0
-
-# Main loop
 while not rospy.is_shutdown():
-    try:
-        val = hx.get_weight(5)  # average over 5 samples
-        force = val * 9.81 / 1000.0  # grams to Newtons
+    # Read and convert
+    force = hx.get_weight()
 
-        # Clamp force to cutoff range
-        force = max(0.0, min(force, FORCE_CUTOFF))
+    # Apply cutoff and bounds
+    force = min(max(force, 0.0), FORCE_CUTOFF)
 
-        # Update buffer and compute moving average
-        force_buffer[index] = force
-        index = (index + 1) % FILTER_SIZE
-        filtered_force = sum(force_buffer) / FILTER_SIZE
+    # Store in circular buffer
+    force_readings[filter_index] = force
+    filter_index = (filter_index + 1) % FILTER_SIZE
 
-        pub.publish(filtered_force)
-        hx.power_down()
-        hx.power_up()
-        rate.sleep()
-    except Exception as e:
-        rospy.logwarn(f"HX711 read failed: {e}")
-        rate.sleep()
+    # Moving average
+    filtered_force = sum(force_readings) / FILTER_SIZE
+
+    # Publish
+    msg = Float32()
+    msg.data = filtered_force
+    pub.publish(msg)
+
+    rate.sleep()
